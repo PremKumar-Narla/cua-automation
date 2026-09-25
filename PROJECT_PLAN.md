@@ -52,11 +52,18 @@ requirement thinly, then deepen the three load-bearing pieces (schema · replay+
       `BUSINESS_OUTCOME / MEMBER_NOT_FOUND` cleanly (the required error replay) —
       verified live; `test_replay_business_outcome_is_not_a_failure`.
 
-## Milestone 4 — Safety  ⬜
-- ⬜ `safety/policy.py`: load allowlist; `check_action`; deny → block/escalate
-- ⬜ Risk classes; irreversible actions gated (block unless approved)
-- ⬜ Redaction at capture time (values never persisted raw)
-- **Acceptance:** an off-allowlist route is blocked; sensitive fields absent from logs.
+## Milestone 4 — Safety  ✅
+- ✅ `safety/policy.py`: load allowlist; `check_action`; deny → block (raises `PolicyViolation`)
+- ✅ Risk classes; irreversible/`requires_approval` capabilities are blocked by
+      `replay()` unless called with `approved=True` (CLI: `--approve`)
+- ✅ Redaction at capture time — both discovery and replay transcripts redact
+      every typed/read value before writing to disk; the caller's actual return
+      value is unaffected (a read capability must still return the real balance)
+- ✅ **Acceptance:** verified in `tests/test_safety.py` (9/9 passing) — off-domain
+      and off-route actions blocked, disallowed action types blocked, an
+      irreversible capability blocked without approval and allowed with it, and
+      a replay transcript asserted to contain zero raw sensitive values while
+      still returning the real value to the caller.
 
 ## Milestone 5 — Escalation & handoff  ⬜  *(real, not a TODO)*
 - ⬜ Detect stuck (max steps / disallowed / risky / hard-fail)

@@ -22,9 +22,10 @@ import time
 from pathlib import Path
 from urllib.parse import urljoin
 
-from cua.artifact.schema import ActionType, Capability, OutcomeClass, SemanticLocator, Step
+from cua.artifact.schema import ActionType, Capability, OutcomeClass, RiskClass, SemanticLocator, Step
 from cua.escalation.controller import SessionControl
 from cua.replay.result import ReplayResult
+from cua.safety import policy
 from cua.surface.base import SurfaceDriver
 
 
@@ -67,7 +68,8 @@ def _match_on_condition(step: Step, driver: SurfaceDriver):
     return None
 
 
-def _act(step: Step, driver: SurfaceDriver, base_url: str, inputs: dict[str, str]) -> str | None:
+def _act(step: Step, driver: SurfaceDriver, base_url: str, inputs: dict[str, str],
+         sensitive_values: list[str]) -> str | None:
     """Perform the step's primary action. Returns an extracted value for READ steps."""
     if step.action == ActionType.NAVIGATE:
         path = (step.url_pattern or "/").format_map(_SafeDict(inputs))
@@ -80,10 +82,14 @@ def _act(step: Step, driver: SurfaceDriver, base_url: str, inputs: dict[str, str
         input_name = (step.value_ref or "").removeprefix("input.")
         if input_name not in inputs:
             raise KeyError(input_name)
-        driver.type(step.target, inputs[input_name])
+        value = inputs[input_name]
+        driver.type(step.target, value)
+        sensitive_values.append(value)
         return None
     if step.action == ActionType.READ:
-        return driver.read(step.target)
+        value = driver.read(step.target)
+        sensitive_values.append(value)
+        return value
     if step.action == ActionType.ASSERT:
         res = driver.resolve(step.target)
         if not res.ok:
@@ -102,6 +108,7 @@ def replay(
     control: SessionControl | None = None,
     step_timeout: float = 5.0,
     evidence_root: Path = Path("evidence"),
+    approved: bool = False,
 ) -> ReplayResult:
     _validate_inputs(capability, inputs)
 
@@ -109,12 +116,26 @@ def replay(
     run_dir.mkdir(parents=True, exist_ok=True)
     driver.set_evidence_dir(run_dir)
     transcript_path = run_dir / "transcript.jsonl"
+    sensitive_values: list[str] = []
 
     def log(entry: dict) -> None:
+        # Redact at capture time: sensitive_values grows as steps run, so earlier
+        # entries are re-checked too — nothing typed or read ever lands raw on disk.
+        redacted = json.loads(policy.redact(json.dumps(entry), sensitive_values))
         with transcript_path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(entry) + "\n")
+            f.write(json.dumps(redacted) + "\n")
 
     log({"event": "start", "capability_id": capability.capability_id, "version": capability.version})
+
+    needs_approval = capability.policy.requires_approval or capability.policy.risk_class == RiskClass.IRREVERSIBLE
+    if needs_approval and not approved:
+        reason = (f"risk_class={capability.policy.risk_class.value}, "
+                  f"requires_approval={capability.policy.requires_approval}")
+        log({"event": "blocked", "reason": reason})
+        return ReplayResult.failure(
+            step="policy", expected="approved=True for an irreversible/gated capability",
+            observed=reason, evidence_ref=str(run_dir),
+        )
 
     outputs: dict[str, str] = {}
     for step in capability.steps:
@@ -122,7 +143,7 @@ def replay(
             control.guard()
 
         try:
-            value = _act(step, driver, base_url, inputs)
+            value = _act(step, driver, base_url, inputs, sensitive_values)
         except (LookupError, KeyError) as e:
             matched = _match_on_condition(step, driver)
             if matched and matched.classify == OutcomeClass.BUSINESS_OUTCOME:

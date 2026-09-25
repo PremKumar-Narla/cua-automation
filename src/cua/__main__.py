@@ -70,7 +70,7 @@ def cmd_replay(args: argparse.Namespace) -> int:
 
     driver = WebDriver(headed=not args.headless)
     try:
-        result = replay(cap, inputs, driver, base_url=target["base_url"])
+        result = replay(cap, inputs, driver, base_url=target["base_url"], approved=args.approve)
     finally:
         driver.close()
 
@@ -108,6 +108,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_replay.add_argument("--target", default=None, help="path to a target config yaml (default: config/target.<app_id>.yaml)")
     p_replay.add_argument("--input", action="append", default=[], help="key=value, repeatable")
     p_replay.add_argument("--headless", action="store_true")
+    p_replay.add_argument("--approve", action="store_true",
+                           help="required to run a capability whose policy is irreversible or requires_approval")
     p_replay.set_defaults(func=cmd_replay)
 
     return parser
