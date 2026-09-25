@@ -8,15 +8,12 @@ takeover path and safety guardrails.
 > Discovery (LLM decides) → Artifact (frozen capability) → Replay (no LLM) → Escalation (human, same live session)
 
 ## Status
-- **Milestone 0** (scaffold): done.
-- **Milestone 1** (real discovery run): built — Playwright driver, safety-checked
-  agent loop, LLM tool surface — and verified end-to-end by hand-driving the exact
-  action sequence through the real execution path against the real mock app. Only
-  the live LLM call itself (which needs a free Gemini API key) is untested so far.
-- **Milestone 2** (deterministic replay): done and tested — 6/6 tests passing
-  against the real mock app (success, business-outcome-vs-crash, fail-closed on
-  drift, determinism, input validation, zero-LLM-dependency check).
-- Milestones 3–6: not started. See `PROJECT_PLAN.md` for the build order.
+All milestones through 5 are done and verified against the real mock app (not
+just written): 21 automated tests passing, plus a genuine live discovery run
+against Gemini that produced a complete capability, which then replayed
+successfully with zero LLM calls. See `PROJECT_PLAN.md` for the full milestone
+breakdown and `REPORT.md` for the design write-up, including what's
+intentionally left as a documented cut (recovery routines, an approval API).
 
 ## Setup
 ```bash
@@ -41,7 +38,8 @@ flask --app apps/mock_bank/app run     # serves the legacy-styled servicing cons
 python -m cua discover \
   --goal "Look up member 12345 and read their current savings balance" \
   --target config/target.servicing-console.yaml \
-  --input member_id=12345
+  --input member_id=12345 \
+  --capability-id member.read_savings_balance
 
 # 2) Replay: run the saved artifact deterministically, no LLM
 python -m cua replay \
