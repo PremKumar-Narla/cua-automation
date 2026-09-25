@@ -164,6 +164,11 @@ class WebDriver(SurfaceDriver):
         return (handle.text_content() or "").strip()
 
     def close(self) -> None:
-        self.context.close()
-        self.browser.close()
-        self._pw.stop()
+        # Each step attempted independently: if the browser already crashed/closed
+        # itself, an earlier step raising must not skip stopping the driver process
+        # and leaking it.
+        for step in (self.context.close, self.browser.close, self._pw.stop):
+            try:
+                step()
+            except Exception:
+                pass

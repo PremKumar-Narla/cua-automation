@@ -7,6 +7,9 @@ import argparse
 import sys
 
 import yaml
+from dotenv import load_dotenv
+
+load_dotenv()  # picks up GEMINI_API_KEY / LLM_MODEL from .env before anything reads os.environ
 
 from cua.artifact.store import load as load_capability
 from cua.replay.engine import replay

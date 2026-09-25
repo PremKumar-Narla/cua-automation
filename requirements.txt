@@ -1,6 +1,7 @@
 pydantic>=2.6
 playwright>=1.44
 google-genai>=1.0      # Gemini free tier; the LLM used for discovery
+python-dotenv>=1.0     # loads .env into the environment
 pyyaml>=6.0
 flask>=3.0             # mock target only
 pytest>=8.0

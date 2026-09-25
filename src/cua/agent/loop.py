@@ -133,6 +133,31 @@ def _human_takeover(req: InterventionRequest, control: SessionControl, driver: S
     print("  Control handed back to the agent; resuming.\n")
 
 
+def _generate_with_retry(client, model: str, contents, gen_config, log,
+                          max_attempts: int = 4, base_delay: float = 2.0, rate_limit_delay: float = 40.0):
+    """Transient LLM API overload (5xx) is common and expected — retry with
+    exponential backoff. A 429 (free-tier rate limit — 5 requests/minute is easy
+    for a single discovery run to hit on its own) waits long enough to cross into
+    the next quota window rather than backing off briefly. Any other client error
+    (e.g. a bad model name) means the request itself is wrong, not the server —
+    never retried."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return client.models.generate_content(model=model, contents=contents, config=gen_config)
+        except genai.errors.ServerError as error:
+            if attempt == max_attempts:
+                raise
+            delay = base_delay * (2 ** (attempt - 1))
+            log({"event": "llm_retry", "attempt": attempt, "reason": str(error), "delay_s": delay})
+            time.sleep(delay)
+        except genai.errors.ClientError as error:
+            if error.code != 429 or attempt == max_attempts:
+                raise
+            log({"event": "llm_retry_rate_limited", "attempt": attempt, "reason": str(error),
+                 "delay_s": rate_limit_delay})
+            time.sleep(rate_limit_delay)
+
+
 def _check(action: ActionType, url: str, allowlist: dict) -> str | None:
     try:
         policy.check_action(action, url, allowlist)
@@ -157,17 +182,26 @@ def _execute(
         locator = SemanticLocator(role=expect["role"], name=expect["name"])
         return driver.resolve(locator).ok
 
+    def landed_text(landed: bool, expect: dict) -> str:
+        if landed:
+            return f"confirmed {expect}"
+        return (f"NOTE: expected {expect} but that was not found afterward — the action itself "
+                f"still happened. Check the observation below; if something looks wrong, correct "
+                f"course, otherwise continue.")
+
     if name == "navigate":
         path = args["url_pattern"].format_map(_SafeDict(inputs))
         full_url = urljoin(base_url + "/", path.lstrip("/"))
         if violation := _check(ActionType.NAVIGATE, full_url, allowlist):
             return err(violation)
         driver.navigate(full_url)
-        if not verify_expect(args["expect"]):
-            return err(f"navigated to {path} but expected {args['expect']} did not appear")
+        landed = verify_expect(args["expect"])
+        # Only trust the model's predicted post-state as a replay wait_for if it was
+        # actually observed — an unverified guess baked into the capability would make
+        # replay fail on the same wrong assumption every time.
         step = Step(id=step_id, intent=f"navigate to {path}", action=ActionType.NAVIGATE,
-                    url_pattern=path, wait_for=args["expect"])
-        return ok(step, f"navigated to {path}; confirmed {args['expect']}")
+                    url_pattern=path, wait_for=args["expect"] if landed else None)
+        return ok(step, f"navigated to {path}; {landed_text(landed, args['expect'])}")
 
     if name == "click":
         locator = SemanticLocator(role=args["role"], name=args["name"], anchors=args.get("anchors") or [])
@@ -177,11 +211,10 @@ def _execute(
             driver.click(locator)
         except LookupError as error:
             return err(str(error))
-        if not verify_expect(args["expect"]):
-            return err(f"clicked {args['name']} but expected {args['expect']} did not appear")
+        landed = verify_expect(args["expect"])
         step = Step(id=step_id, intent=f"click {args['name']}", action=ActionType.CLICK,
-                    target=locator, wait_for=args["expect"])
-        return ok(step, f"clicked {args['name']}; confirmed {args['expect']}")
+                    target=locator, wait_for=args["expect"] if landed else None)
+        return ok(step, f"clicked {args['name']}; {landed_text(landed, args['expect'])}")
 
     if name == "type":
         input_name = args["value_ref"].removeprefix("input.")
@@ -196,12 +229,11 @@ def _execute(
         except LookupError as error:
             return err(str(error))
         sensitive_values.append(value)
-        if not verify_expect(args["expect"]):
-            return err(f"typed into {args['name']} but expected {args['expect']} did not appear")
+        landed = verify_expect(args["expect"])
         step = Step(id=step_id, intent=f"enter {input_name}", action=ActionType.TYPE,
-                    target=locator, value_ref=args["value_ref"], wait_for=args["expect"],
+                    target=locator, value_ref=args["value_ref"], wait_for=args["expect"] if landed else None,
                     redact=input_name in redact_fields)
-        return ok(step, f"typed into {args['name']}; confirmed {args['expect']}")
+        return ok(step, f"typed into {args['name']}; {landed_text(landed, args['expect'])}")
 
     if name == "read":
         output_name = args["extract_to"].removeprefix("output.")
@@ -249,6 +281,8 @@ def _execute(
             return err(f"checkpoint failed: {checkpoint_args['role']} '{checkpoint_args['name']}' "
                        f"resolved to {resolved.count} elements")
         and_output = checkpoint_args.get("and_output_present")
+        if and_output:
+            and_output = and_output.removeprefix("output.")  # models pass either form
         if and_output and and_output not in outputs_declared:
             return err(f"checkpoint requires output '{and_output}' but it was never read")
         checkpoint = Checkpoint(assert_={"role": checkpoint_args["role"], "name": checkpoint_args["name"]},
@@ -273,7 +307,7 @@ def run_discovery(
     inputs = inputs or {}
     allowlist = allowlist or {}
     capability_id = capability_id or _slugify(goal)
-    model = model or os.environ.get("LLM_MODEL", "gemini-2.5-flash")
+    model = model or os.environ.get("LLM_MODEL", "gemini-3.8-flash")
     base_url = target["base_url"]
     redact_fields = set(allowlist.get("redact_fields", []))
 
@@ -317,7 +351,7 @@ def run_discovery(
         current_url = obs.url
         contents.append(types.Content(role="user", parts=[types.Part(text=_observation_text(obs))]))
 
-        resp = client.models.generate_content(model=model, contents=contents, config=gen_config)
+        resp = _generate_with_retry(client, model, contents, gen_config, log)
         if not resp.candidates:
             reason = f"model returned no candidates (prompt_feedback={resp.prompt_feedback})"
             req = InterventionRequest(capability_id=capability_id, goal=goal,

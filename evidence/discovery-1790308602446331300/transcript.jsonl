@@ -1,0 +1,11 @@
+{"event": "tool_call", "step": "s1", "tool": "navigate", "args": {"expect": {"name": "Member Search", "role": "heading"}, "url_pattern": "/members/search"}}
+{"event": "tool_result", "step": "s1", "status": "ok", "text": "navigated to /members/search; confirmed {'name': 'Member Search', 'role': 'heading'}"}
+{"event": "tool_call", "step": "s2", "tool": "type", "args": {"value_ref": "input.member_id", "role": "textbox", "expect": {"name": "Member Detail", "role": "heading"}, "name": "Member ID"}}
+{"event": "tool_result", "step": "s2", "status": "ok", "text": "typed into Member ID; NOTE: expected {'name': 'Member Detail', 'role': 'heading'} but that was not found afterward \u2014 the action itself still happened. Check the observation below; if something looks wrong, correct course, otherwise continue."}
+{"event": "tool_call", "step": "s3", "tool": "click", "args": {"name": "Search", "role": "button", "expect": {"name": "Member Detail", "role": "heading"}}}
+{"event": "tool_result", "step": "s3", "status": "ok", "text": "clicked Search; confirmed {'name': 'Member Detail', 'role': 'heading'}"}
+{"event": "tool_call", "step": "s4", "tool": "read", "args": {"name": "Savings Balance", "extract_to": "output.savings_balance", "type": "money", "role": "cell"}}
+{"event": "tool_result", "step": "s4", "status": "ok", "text": "read Savings Balance -> bound to output.savings_balance"}
+{"event": "tool_call", "step": "s5", "tool": "done", "args": {"checkpoint": {"role": "heading", "name": "Member Detail", "and_output_present": "output.savings_balance"}}}
+{"event": "tool_result", "step": "s5", "status": "done", "text": "checkpoint verified; goal complete"}
+{"event": "complete", "capability_id": "look_up_member_[REDACTED]_and_read_their_current_savings_balance", "version": 1, "artifact": "artifacts\\look_up_member_[REDACTED]_and_read_their_current_savings_balance.v1.json"}
