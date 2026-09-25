@@ -1,0 +1,173 @@
+"""
+Deterministic replay engine (brief §3.3) — NO LLM in the decision loop.
+This package must never import cua.agent (which pulls in the LLM client) —
+that boundary is what lets a test assert zero model calls during replay.
+
+Contract:
+  replay(capability, inputs, driver, base_url) -> ReplayResult
+
+Determinism strategy:
+  * semantic locator resolution in priority order + uniqueness check (brief §3.7):
+    a locator resolving to 0 or >1 elements is a detectable hard failure, never a guess
+  * recorded wait_for post-conditions, polled with a timeout, instead of fixed sleeps
+  * on_conditions checked right after acting and again if wait_for times out, so a
+    legitimate business outcome (e.g. "no such member") is never conflated with a crash
+  * checkpoint asserted before declaring success; evidence (screenshot + a11y snapshot)
+    captured on every step, same as discovery
+"""
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from urllib.parse import urljoin
+
+from cua.artifact.schema import ActionType, Capability, OutcomeClass, SemanticLocator, Step
+from cua.escalation.controller import SessionControl
+from cua.replay.result import ReplayResult
+from cua.surface.base import SurfaceDriver
+
+
+class _SafeDict(dict):
+    def __missing__(self, key):
+        return "{" + key + "}"
+
+
+def _validate_inputs(capability: Capability, inputs: dict[str, str]) -> None:
+    missing = [p.name for p in capability.inputs if p.required and p.name not in inputs]
+    if missing:
+        raise ValueError(f"missing required input(s): {missing}")
+
+
+def _check_condition(cond: dict, driver: SurfaceDriver) -> bool:
+    """A condition is {"role","name"} | {"text_contains": str} | {"any_of": [cond, ...]}."""
+    if "any_of" in cond:
+        return any(_check_condition(c, driver) for c in cond["any_of"])
+    if "text_contains" in cond:
+        return cond["text_contains"] in driver.observe().a11y_text
+    if "role" in cond and "name" in cond:
+        return driver.resolve(SemanticLocator(role=cond["role"], name=cond["name"])).ok
+    return False
+
+
+def _wait_until(cond: dict, driver: SurfaceDriver, timeout: float = 5.0, poll: float = 0.25) -> bool:
+    deadline = time.time() + timeout
+    while True:
+        if _check_condition(cond, driver):
+            return True
+        if time.time() >= deadline:
+            return False
+        time.sleep(poll)
+
+
+def _match_on_condition(step: Step, driver: SurfaceDriver):
+    for cond in step.on_conditions:
+        if _check_condition(cond.match, driver):
+            return cond
+    return None
+
+
+def _act(step: Step, driver: SurfaceDriver, base_url: str, inputs: dict[str, str]) -> str | None:
+    """Perform the step's primary action. Returns an extracted value for READ steps."""
+    if step.action == ActionType.NAVIGATE:
+        path = (step.url_pattern or "/").format_map(_SafeDict(inputs))
+        driver.navigate(urljoin(base_url + "/", path.lstrip("/")))
+        return None
+    if step.action == ActionType.CLICK:
+        driver.click(step.target)
+        return None
+    if step.action == ActionType.TYPE:
+        input_name = (step.value_ref or "").removeprefix("input.")
+        if input_name not in inputs:
+            raise KeyError(input_name)
+        driver.type(step.target, inputs[input_name])
+        return None
+    if step.action == ActionType.READ:
+        return driver.read(step.target)
+    if step.action == ActionType.ASSERT:
+        res = driver.resolve(step.target)
+        if not res.ok:
+            raise LookupError(f"assert failed: resolved to {res.count} elements")
+        return None
+    if step.action == ActionType.WAIT:
+        return None
+    raise ValueError(f"unknown action {step.action}")
+
+
+def replay(
+    capability: Capability,
+    inputs: dict[str, str],
+    driver: SurfaceDriver,
+    base_url: str,
+    control: SessionControl | None = None,
+    step_timeout: float = 5.0,
+    evidence_root: Path = Path("evidence"),
+) -> ReplayResult:
+    _validate_inputs(capability, inputs)
+
+    run_dir = evidence_root / f"replay-{time.time_ns()}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    driver.set_evidence_dir(run_dir)
+    transcript_path = run_dir / "transcript.jsonl"
+
+    def log(entry: dict) -> None:
+        with transcript_path.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    log({"event": "start", "capability_id": capability.capability_id, "version": capability.version})
+
+    outputs: dict[str, str] = {}
+    for step in capability.steps:
+        if control is not None:
+            control.guard()
+
+        try:
+            value = _act(step, driver, base_url, inputs)
+        except (LookupError, KeyError) as e:
+            matched = _match_on_condition(step, driver)
+            if matched and matched.classify == OutcomeClass.BUSINESS_OUTCOME:
+                log({"event": "business_outcome", "step": step.id, "outcome": matched.outcome})
+                return ReplayResult.business(matched.outcome, evidence_ref=str(run_dir))
+            log({"event": "failure", "step": step.id, "reason": str(e)})
+            return ReplayResult.failure(
+                step=step.id, expected=f"{step.action.value} to resolve/act", observed=str(e),
+                evidence_ref=str(run_dir),
+            )
+
+        if step.action == ActionType.READ and step.extract_to:
+            outputs[step.extract_to.removeprefix("output.")] = value
+
+        matched = _match_on_condition(step, driver)
+        if matched and matched.classify == OutcomeClass.BUSINESS_OUTCOME:
+            log({"event": "business_outcome", "step": step.id, "outcome": matched.outcome})
+            return ReplayResult.business(matched.outcome, evidence_ref=str(run_dir))
+
+        if step.wait_for is not None and not _wait_until(step.wait_for, driver, timeout=step_timeout):
+            matched = _match_on_condition(step, driver)
+            if matched and matched.classify == OutcomeClass.BUSINESS_OUTCOME:
+                log({"event": "business_outcome", "step": step.id, "outcome": matched.outcome})
+                return ReplayResult.business(matched.outcome, evidence_ref=str(run_dir))
+            log({"event": "failure", "step": step.id, "reason": "wait_for timed out"})
+            return ReplayResult.failure(
+                step=step.id, expected=str(step.wait_for), observed=driver.observe().a11y_text,
+                evidence_ref=str(run_dir),
+            )
+
+        log({"event": "step_ok", "step": step.id})
+
+    if not _check_condition(capability.checkpoint.assert_, driver):
+        log({"event": "failure", "step": "checkpoint", "reason": "checkpoint assertion failed"})
+        return ReplayResult.failure(
+            step="checkpoint", expected=str(capability.checkpoint.assert_),
+            observed=driver.observe().a11y_text, evidence_ref=str(run_dir),
+        )
+    and_output = capability.checkpoint.and_output_present
+    if and_output and and_output not in outputs:
+        log({"event": "failure", "step": "checkpoint", "reason": f"output '{and_output}' was never read"})
+        return ReplayResult.failure(
+            step="checkpoint", expected=f"output '{and_output}' present", observed=str(outputs),
+            evidence_ref=str(run_dir),
+        )
+
+    log({"event": "success", "outputs": outputs})
+    return ReplayResult.success(outputs, evidence_ref=str(run_dir))

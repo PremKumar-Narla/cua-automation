@@ -1,0 +1,4 @@
+app_id: servicing-console
+surface_type: web           # web | legacy_web | desktop
+base_url: "http://127.0.0.1:5000"
+entry: "/members/search"

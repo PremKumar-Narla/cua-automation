@@ -1,0 +1,6 @@
+{"event": "start", "capability_id": "member.read_savings_balance", "version": 1}
+{"event": "step_ok", "step": "s1"}
+{"event": "step_ok", "step": "s2"}
+{"event": "step_ok", "step": "s3"}
+{"event": "step_ok", "step": "s4"}
+{"event": "success", "outputs": {"savings_balance": "$4,210.55"}}

@@ -1,0 +1,4 @@
+{"event": "start", "capability_id": "member.read_savings_balance", "version": 1}
+{"event": "step_ok", "step": "s1"}
+{"event": "step_ok", "step": "s2"}
+{"event": "business_outcome", "step": "s3", "outcome": "MEMBER_NOT_FOUND"}

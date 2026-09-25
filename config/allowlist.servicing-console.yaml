@@ -1,0 +1,22 @@
+# Safety allowlist (brief §3.4). Enforced BEFORE every action, at one choke-point.
+app_id: servicing-console
+permitted_domains:
+  - "localhost"
+  - "127.0.0.1"
+permitted_routes:            # route patterns the agent may visit
+  - "/members/search"
+  - "/members/:id"
+  - "/members/:id/subaccounts/new"
+permitted_actions:          # action types the agent may perform
+  - navigate
+  - click
+  - type
+  - read
+  - assert
+risky_actions:              # require confirmation / approval; blocked in unattended replay
+  - class: irreversible
+    match_intent: ["confirm", "submit", "create", "transfer", "delete"]
+redact_fields:              # never log raw values for these
+  - member_id
+  - savings_balance
+  - ssn

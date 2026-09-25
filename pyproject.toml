@@ -1,0 +1,11 @@
+[project]
+name = "cua-automation"
+version = "0.1.0"
+description = "Computer-use automation: discover once, replay deterministically."
+requires-python = ">=3.11"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

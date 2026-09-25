@@ -1,0 +1,155 @@
+{
+  "schema_version": "1.0",
+  "capability_id": "member.read_savings_balance",
+  "version": 1,
+  "name": "Read a member's savings balance",
+  "description": "Looks up a member by ID and returns their current savings balance.",
+  "target": {
+    "surface_type": "web",
+    "app_id": "servicing-console",
+    "vendor_base": "vendor-x@2024",
+    "entry": {
+      "url_pattern": "/members/search"
+    }
+  },
+  "inputs": [
+    {
+      "name": "member_id",
+      "type": "string",
+      "required": true,
+      "sensitivity": "pii",
+      "description": null
+    }
+  ],
+  "outputs": [
+    {
+      "name": "savings_balance",
+      "type": "money",
+      "from_step": "s4"
+    }
+  ],
+  "steps": [
+    {
+      "id": "s1",
+      "intent": "Open member search",
+      "action": "navigate",
+      "target": null,
+      "url_pattern": "/members/search",
+      "value_ref": null,
+      "extract_to": null,
+      "wait_for": {
+        "role": "textbox",
+        "name": "Member ID"
+      },
+      "on_conditions": [],
+      "redact": false
+    },
+    {
+      "id": "s2",
+      "intent": "Enter the member id",
+      "action": "type",
+      "target": {
+        "role": "textbox",
+        "name": "Member ID",
+        "anchors": [
+          "within form 'Member Search'"
+        ],
+        "fallbacks": [
+          {
+            "strategy": "css",
+            "value": "#m"
+          }
+        ],
+        "robustness_note": "role+name is stable; css is last-resort only"
+      },
+      "url_pattern": null,
+      "value_ref": "input.member_id",
+      "extract_to": null,
+      "wait_for": null,
+      "on_conditions": [],
+      "redact": true
+    },
+    {
+      "id": "s3",
+      "intent": "Submit the search",
+      "action": "click",
+      "target": {
+        "role": "button",
+        "name": "Search",
+        "anchors": [],
+        "fallbacks": [],
+        "robustness_note": null
+      },
+      "url_pattern": null,
+      "value_ref": null,
+      "extract_to": null,
+      "wait_for": {
+        "any_of": [
+          {
+            "role": "heading",
+            "name": "Member Detail"
+          },
+          {
+            "text_contains": "No such member"
+          }
+        ]
+      },
+      "on_conditions": [
+        {
+          "match": {
+            "text_contains": "No such member"
+          },
+          "classify": "business_outcome",
+          "outcome": "MEMBER_NOT_FOUND",
+          "recovery": null
+        },
+        {
+          "match": {
+            "text_contains": "session expired"
+          },
+          "classify": "recoverable",
+          "outcome": null,
+          "recovery": "reauth_then_retry"
+        }
+      ],
+      "redact": false
+    },
+    {
+      "id": "s4",
+      "intent": "Read the savings balance",
+      "action": "read",
+      "target": {
+        "role": "cell",
+        "name": "Savings Balance",
+        "anchors": [
+          "row label 'Savings'"
+        ],
+        "fallbacks": [],
+        "robustness_note": null
+      },
+      "url_pattern": null,
+      "value_ref": null,
+      "extract_to": "output.savings_balance",
+      "wait_for": null,
+      "on_conditions": [],
+      "redact": false
+    }
+  ],
+  "checkpoint": {
+    "assert": {
+      "role": "heading",
+      "name": "Member Detail"
+    },
+    "and_output_present": "savings_balance"
+  },
+  "policy": {
+    "risk_class": "read_only",
+    "requires_approval": false,
+    "allowlist_ref": "servicing-console.allowlist.yaml"
+  },
+  "provenance": {
+    "recorded_from_run": "evidence/discovery-EXAMPLE",
+    "model": "<model>",
+    "recorded_at": "2026-09-11T22:14:00Z"
+  }
+}

@@ -1,0 +1,11 @@
+<!-- Legacy on purpose: table layout, no test ids, non-semantic markup. -->
+<html><body>
+<h2>Member Search</h2>
+<form action="" onsubmit="location.href='/members/'+document.getElementById('m').value;return false;">
+  <table><tr>
+    <td>Member ID</td>
+    <td><input id="m" aria-label="Member ID"></td>
+    <td><button>Search</button></td>
+  </tr></table>
+</form>
+</body></html>
