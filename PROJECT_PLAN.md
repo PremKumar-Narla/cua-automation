@@ -65,13 +65,29 @@ requirement thinly, then deepen the three load-bearing pieces (schema · replay+
       a replay transcript asserted to contain zero raw sensitive values while
       still returning the real value to the caller.
 
-## Milestone 5 — Escalation & handoff  ⬜  *(real, not a TODO)*
-- ⬜ Detect stuck (max steps / disallowed / risky / hard-fail)
-- ⬜ `InterventionRequest` with context; `guard()` at the loop choke-point
-- ⬜ Headed session stays alive; human acts in the SAME session; capture actions
-- ⬜ Hand-back signal (CLI/endpoint — operator UI mocked) → resume from paused step
-- **Acceptance:** trigger an intervention, act as the human, hand back, run resumes;
-      handoff recorded in evidence.
+## Milestone 5 — Escalation & handoff  ✅  *(real, not a TODO)*
+- ✅ Detect stuck: the model explicitly calling `escalate`, the model returning no
+      usable response, and 3 consecutive failed actions all trigger the same
+      handoff path (`_human_takeover` in `agent/loop.py`)
+- ✅ `InterventionRequest` carries capability/goal/step/reason/state snapshot;
+      `SessionControl` is the single source of truth for who's in control
+      (`AGENT | HUMAN | NONE`)
+- ✅ Headed session stays alive — escalation no longer aborts the run (it used to;
+      found and fixed while building this). The browser window stays open and the
+      human acts directly in it. "Capture actions" is scoped honestly: it records
+      that a human intervened and the page state after they acted, not a literal
+      click-by-click trace (that would need injecting JS event listeners into the
+      page — not built).
+- ✅ Hand-back signal: the mocked operator console is a terminal prompt — the
+      human presses Enter when done, which calls `hand_back()` and the discovery
+      loop's `while True` genuinely resumes from where it paused (not a restart;
+      `contents`/`steps` accumulated so far are untouched). Time spent waiting on
+      the human doesn't count against the run's timeout budget.
+- ✅ **Acceptance:** verified in `tests/test_agent_loop.py` (2/2) — a triggered
+      intervention returns control to the agent after a simulated hand-back, with
+      the episode recorded in the transcript (`escalate` + `human_handback`
+      events); a non-interactive context (no terminal to hand off to) fails
+      loudly instead of hanging forever.
 
 ## Milestone 6 — Write-up + evidence + design-only  ⬜
 - ⬜ `REPORT.md` — 7 required headings, 1–3 pages

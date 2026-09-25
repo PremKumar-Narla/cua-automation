@@ -115,5 +115,15 @@ def test_replay_is_deterministic(mock_bank_url, capability, tmp_path):
 
 
 def test_replay_engine_never_imports_the_llm_client():
-    assert "google.genai" not in sys.modules
-    assert "cua.agent" not in sys.modules
+    # Runs in a fresh subprocess rather than checking this process's sys.modules —
+    # otherwise the assertion would be fragile to whatever else this test session
+    # happened to import first (e.g. a test file that imports cua.agent).
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import cua.replay.engine, sys\n"
+         "assert 'google.genai' not in sys.modules\n"
+         "assert 'cua.agent' not in sys.modules\n"
+         "print('OK')"],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 0 and "OK" in result.stdout, result.stderr

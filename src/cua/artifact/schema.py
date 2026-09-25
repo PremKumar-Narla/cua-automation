@@ -159,4 +159,4 @@ class Capability(BaseModel):
     provenance: Provenance = Field(default_factory=Provenance)
 
     def input_names(self) -> set[str]:
-        return {p.name for p in self.inputs}
+        return {param.name for param in self.inputs}

@@ -48,12 +48,13 @@ def cmd_discover(args: argparse.Namespace) -> int:
             model=args.model,
             stop=StopConditions(max_steps=args.max_steps, timeout_s=args.timeout),
         )
-    except DiscoveryEscalated as e:
-        print(f"ESCALATED: {e.request.reason}", file=sys.stderr)
-        print(f"see {run_dir if 'run_dir' in dir() else ''}", file=sys.stderr)
+    except DiscoveryEscalated as error:
+        # only reached if there was no interactive terminal to hand off to — a normal
+        # escalation pauses and resumes in place instead of raising (see agent/loop.py)
+        print(f"ESCALATED (no terminal to hand off to): {error.request.reason}", file=sys.stderr)
         return 2
-    except DiscoveryFailed as e:
-        print(f"FAILED: {e}", file=sys.stderr)
+    except DiscoveryFailed as error:
+        print(f"FAILED: {error}", file=sys.stderr)
         return 1
     finally:
         driver.close()

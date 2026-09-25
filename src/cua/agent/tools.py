@@ -131,7 +131,7 @@ def gemini_tool() -> types.Tool:
     """AGENT_TOOLS is plain JSON Schema, which the Gemini SDK accepts directly via
     parameters_json_schema — one conversion point, one source of truth for the tools."""
     return types.Tool(function_declarations=[
-        types.FunctionDeclaration(name=t["name"], description=t["description"],
-                                   parameters_json_schema=t["input_schema"])
-        for t in AGENT_TOOLS
+        types.FunctionDeclaration(name=tool_def["name"], description=tool_def["description"],
+                                   parameters_json_schema=tool_def["input_schema"])
+        for tool_def in AGENT_TOOLS
     ])

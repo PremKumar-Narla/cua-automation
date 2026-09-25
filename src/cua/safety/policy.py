@@ -49,7 +49,7 @@ def check_action(action: ActionType, url: str, allowlist: dict) -> None:
         raise PolicyViolation(f"domain '{domain}' is not in the permitted_domains allowlist")
 
     permitted_routes = allowlist.get("permitted_routes", [])
-    if not any(_route_matches(r, parsed.path) for r in permitted_routes):
+    if not any(_route_matches(route, parsed.path) for route in permitted_routes):
         raise PolicyViolation(f"route '{parsed.path}' is not in the permitted_routes allowlist")
 
 

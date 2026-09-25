@@ -29,8 +29,8 @@ _SNAPSHOT_LINE = re.compile(r'-\s*([a-zA-Z][\w-]*)\s+"([^"]*)"')
 def _parse_interactive(snapshot_text: str) -> list[dict]:
     """Flatten an aria_snapshot text dump into [{role, name}, ...]."""
     return [
-        {"role": m.group(1), "name": m.group(2)}
-        for m in _SNAPSHOT_LINE.finditer(snapshot_text)
+        {"role": match.group(1), "name": match.group(2)}
+        for match in _SNAPSHOT_LINE.finditer(snapshot_text)
     ]
 
 
@@ -86,8 +86,8 @@ class WebDriver(SurfaceDriver):
         else:
             count = 0
 
-        for fb in locator.fallbacks:
-            resolved = self._resolve_fallback(fb)
+        for fallback in locator.fallbacks:
+            resolved = self._resolve_fallback(fallback)
             if resolved is not None:
                 return resolved
 
@@ -110,32 +110,32 @@ class WebDriver(SurfaceDriver):
             return f'"{text}"'
         return "concat(" + ", '\"', ".join(f'"{part}"' for part in text.split('"')) + ")"
 
-    def _resolve_fallback(self, fb) -> Optional[ResolveResult]:
-        if fb.strategy == "css":
-            candidate = self.page.locator(fb.value)
-        elif fb.strategy == "xpath":
-            candidate = self.page.locator(f"xpath={fb.value}")
+    def _resolve_fallback(self, fallback) -> Optional[ResolveResult]:
+        if fallback.strategy == "css":
+            candidate = self.page.locator(fallback.value)
+        elif fallback.strategy == "xpath":
+            candidate = self.page.locator(f"xpath={fallback.value}")
         else:  # coordinates — last resort, cannot verify uniqueness
-            x_str, y_str = fb.value.split(",")
+            x_str, y_str = fallback.value.split(",")
             return ResolveResult(
                 ok=True, handle=(float(x_str), float(y_str)), count=1,
                 strategy_used="fallback:coordinates",
             )
         count = candidate.count()
         if count == 1:
-            return ResolveResult(ok=True, handle=candidate, count=1, strategy_used=f"fallback:{fb.strategy}")
+            return ResolveResult(ok=True, handle=candidate, count=1, strategy_used=f"fallback:{fallback.strategy}")
         return None
 
     # -- actions ------------------------------------------------------------
 
     def _require(self, locator: SemanticLocator) -> Locator | tuple:
-        res = self.resolve(locator)
-        if not res.ok:
+        resolved = self.resolve(locator)
+        if not resolved.ok:
             raise LookupError(
                 f"locator role={locator.role!r} name={locator.name!r} "
-                f"resolved to {res.count} elements (need exactly 1)"
+                f"resolved to {resolved.count} elements (need exactly 1)"
             )
-        return res.handle
+        return resolved.handle
 
     def click(self, locator: SemanticLocator) -> None:
         handle = self._require(locator)

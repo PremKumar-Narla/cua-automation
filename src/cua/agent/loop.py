@@ -77,7 +77,7 @@ class _SafeDict(dict):
 
 
 def _build_system_prompt(goal: str, inputs: dict[str, str], target: dict) -> str:
-    input_lines = "\n".join(f'  - {k} = "{v}"' for k, v in inputs.items()) or "  (none)"
+    input_lines = "\n".join(f'  - {name} = "{value}"' for name, value in inputs.items()) or "  (none)"
     entry = target.get("entry", "/")
     return f"""You are operating a legacy web application that has no API, entirely through
 the tool calls provided to you. Act one step at a time: call exactly one tool per turn.
@@ -109,16 +109,40 @@ def _observation_text(obs) -> str:
     return f"URL: {obs.url}\n\n{obs.a11y_text}"
 
 
+def _human_takeover(req: InterventionRequest, control: SessionControl, driver: SurfaceDriver, log) -> None:
+    """Pause in place and let a human act in the SAME live (headed) browser session.
+    Blocks synchronously on the terminal — this is the mocked operator console
+    (brief §3.6 allows mocking the console UI, but the pause/resume mechanism and
+    controller state must be real, which this is: `control.controller` genuinely
+    flips to HUMAN and the discovery loop genuinely blocks until hand-back)."""
+    control.request_intervention(req)
+    log({"event": "escalate", "reason": req.reason, "step": req.current_step})
+    print(f"\n[ESCALATED] {req.reason}")
+    print(f"  capability={req.capability_id!r} step={req.current_step} goal={req.goal!r}")
+    print("  The browser window is open — take over and do whatever's needed.")
+    try:
+        input("  Press Enter once you're done, to hand control back to the agent... ")
+    except EOFError:
+        log({"event": "escalate_abandoned", "reason": "no interactive terminal to hand off to"})
+        raise DiscoveryEscalated(req)
+
+    after = driver.observe()
+    control.record_human_action({"observation_after_url": after.url})
+    control.hand_back()
+    log({"event": "human_handback", "observation_after_url": after.url})
+    print("  Control handed back to the agent; resuming.\n")
+
+
 def _check(action: ActionType, url: str, allowlist: dict) -> str | None:
     try:
         policy.check_action(action, url, allowlist)
         return None
-    except PolicyViolation as e:
-        return str(e)
+    except PolicyViolation as error:
+        return str(error)
 
 
 def _execute(
-    *, name: str, args: dict, step_id: str, driver: SurfaceDriver, control: SessionControl,
+    *, name: str, args: dict, step_id: str, driver: SurfaceDriver,
     allowlist: dict, base_url: str, current_url: str, inputs: dict[str, str],
     outputs_declared: dict[str, str], output_types: dict[str, str],
     sensitive_values: list[str], redact_fields: set[str], capability_id: str, goal: str,
@@ -151,8 +175,8 @@ def _execute(
             return err(violation)
         try:
             driver.click(locator)
-        except LookupError as e:
-            return err(str(e))
+        except LookupError as error:
+            return err(str(error))
         if not verify_expect(args["expect"]):
             return err(f"clicked {args['name']} but expected {args['expect']} did not appear")
         step = Step(id=step_id, intent=f"click {args['name']}", action=ActionType.CLICK,
@@ -169,8 +193,8 @@ def _execute(
             return err(violation)
         try:
             driver.type(locator, value)
-        except LookupError as e:
-            return err(str(e))
+        except LookupError as error:
+            return err(str(error))
         sensitive_values.append(value)
         if not verify_expect(args["expect"]):
             return err(f"typed into {args['name']} but expected {args['expect']} did not appear")
@@ -186,8 +210,8 @@ def _execute(
             return err(violation)
         try:
             value = driver.read(locator)
-        except LookupError as e:
-            return err(str(e))
+        except LookupError as error:
+            return err(str(error))
         outputs_declared[output_name] = step_id
         output_types[output_name] = args.get("type", "string")
         sensitive_values.append(value)
@@ -200,9 +224,9 @@ def _execute(
         locator = SemanticLocator(role=args["role"], name=args["name"])
         if violation := _check(ActionType.ASSERT, current_url, allowlist):
             return err(violation)
-        res = driver.resolve(locator)
-        if not res.ok:
-            return err(f"assert failed: {args['role']} '{args['name']}' resolved to {res.count} elements")
+        resolved = driver.resolve(locator)
+        if not resolved.ok:
+            return err(f"assert failed: {args['role']} '{args['name']}' resolved to {resolved.count} elements")
         step = Step(id=step_id, intent=f"assert {args['name']} present", action=ActionType.ASSERT, target=locator)
         return ok(step, f"confirmed {args['role']} '{args['name']}' is present")
 
@@ -211,21 +235,24 @@ def _execute(
         req = InterventionRequest(capability_id=capability_id, goal=goal, current_step=step_id,
                                    reason=args["reason"], state_snapshot=obs.a11y_text,
                                    screenshot_ref=obs.screenshot_ref)
-        control.request_intervention(req)
+        # request_intervention() happens centrally in _human_takeover(), which also
+        # blocks for the actual hand-back — see run_discovery's main loop.
         return {"status": "escalate", "step": None, "result_text": f"escalated: {args['reason']}", "request": req}
 
     if name == "done":
-        cp = args["checkpoint"]
-        locator = SemanticLocator(role=cp["role"], name=cp["name"])
+        checkpoint_args = args["checkpoint"]
+        locator = SemanticLocator(role=checkpoint_args["role"], name=checkpoint_args["name"])
         if violation := _check(ActionType.ASSERT, current_url, allowlist):
             return err(violation)
-        res = driver.resolve(locator)
-        if not res.ok:
-            return err(f"checkpoint failed: {cp['role']} '{cp['name']}' resolved to {res.count} elements")
-        and_output = cp.get("and_output_present")
+        resolved = driver.resolve(locator)
+        if not resolved.ok:
+            return err(f"checkpoint failed: {checkpoint_args['role']} '{checkpoint_args['name']}' "
+                       f"resolved to {resolved.count} elements")
+        and_output = checkpoint_args.get("and_output_present")
         if and_output and and_output not in outputs_declared:
             return err(f"checkpoint requires output '{and_output}' but it was never read")
-        checkpoint = Checkpoint(assert_={"role": cp["role"], "name": cp["name"]}, and_output_present=and_output)
+        checkpoint = Checkpoint(assert_={"role": checkpoint_args["role"], "name": checkpoint_args["name"]},
+                                 and_output_present=and_output)
         return {"status": "done", "step": None, "result_text": "checkpoint verified; goal complete",
                 "checkpoint": checkpoint}
 
@@ -274,6 +301,8 @@ def run_discovery(
     contents: list[types.Content] = []
     started = time.time()
     step_num = 0
+    consecutive_errors = 0
+    MAX_CONSECUTIVE_ERRORS = 3
     checkpoint: Checkpoint | None = None
 
     while True:
@@ -294,23 +323,25 @@ def run_discovery(
             req = InterventionRequest(capability_id=capability_id, goal=goal,
                                        current_step=f"s{step_num + 1}", reason=reason,
                                        state_snapshot=obs.a11y_text, screenshot_ref=obs.screenshot_ref)
-            control.request_intervention(req)
-            log({"event": "escalate", "reason": reason})
-            raise DiscoveryEscalated(req)
+            pause_started = time.time()
+            _human_takeover(req, control, driver, log)
+            started += time.time() - pause_started  # don't burn the run's budget on human time
+            continue
 
         model_content = resp.candidates[0].content
         contents.append(model_content)
 
-        calls = [p.function_call for p in (model_content.parts or []) if p.function_call]
+        calls = [part.function_call for part in (model_content.parts or []) if part.function_call]
         call, extra_calls = (calls[0], calls[1:]) if calls else (None, [])
         if call is None:
             reason = "model responded without calling a tool"
             req = InterventionRequest(capability_id=capability_id, goal=goal,
                                        current_step=f"s{step_num + 1}", reason=reason,
                                        state_snapshot=obs.a11y_text, screenshot_ref=obs.screenshot_ref)
-            control.request_intervention(req)
-            log({"event": "escalate", "reason": reason})
-            raise DiscoveryEscalated(req)
+            pause_started = time.time()
+            _human_takeover(req, control, driver, log)
+            started += time.time() - pause_started
+            continue
 
         step_num += 1
         step_id = f"s{step_num}"
@@ -318,7 +349,7 @@ def run_discovery(
         log({"event": "tool_call", "step": step_id, "tool": call.name, "args": args})
 
         outcome = _execute(
-            name=call.name, args=args, step_id=step_id, driver=driver, control=control,
+            name=call.name, args=args, step_id=step_id, driver=driver,
             allowlist=allowlist, base_url=base_url, current_url=current_url, inputs=inputs,
             outputs_declared=outputs_declared, output_types=output_types,
             sensitive_values=sensitive_values, redact_fields=redact_fields,
@@ -327,16 +358,35 @@ def run_discovery(
         log({"event": "tool_result", "step": step_id, "status": outcome["status"], "text": outcome["result_text"]})
         response_parts = [types.Part.from_function_response(name=call.name, response={"result": outcome["result_text"]})]
         if extra_calls:
-            log({"event": "extra_calls_skipped", "step": step_id, "tools": [c.name for c in extra_calls]})
+            log({"event": "extra_calls_skipped", "step": step_id,
+                 "tools": [extra_call.name for extra_call in extra_calls]})
             response_parts += [
                 types.Part.from_function_response(
-                    name=c.name, response={"result": "skipped: only one tool call is processed per turn"})
-                for c in extra_calls
+                    name=extra_call.name,
+                    response={"result": "skipped: only one tool call is processed per turn"})
+                for extra_call in extra_calls
             ]
         contents.append(types.Content(role="user", parts=response_parts))
 
         if outcome["status"] == "escalate":
-            raise DiscoveryEscalated(outcome["request"])
+            pause_started = time.time()
+            _human_takeover(outcome["request"], control, driver, log)
+            started += time.time() - pause_started
+            consecutive_errors = 0
+            continue
+        if outcome["status"] == "error":
+            consecutive_errors += 1
+            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                req = InterventionRequest(
+                    capability_id=capability_id, goal=goal, current_step=step_id,
+                    reason=f"{consecutive_errors} consecutive failed actions — the agent looks stuck",
+                    state_snapshot=driver.observe().a11y_text)
+                pause_started = time.time()
+                _human_takeover(req, control, driver, log)
+                started += time.time() - pause_started
+                consecutive_errors = 0
+            continue
+        consecutive_errors = 0
         if outcome["status"] == "ok" and outcome["step"] is not None:
             steps.append(outcome["step"])
         if outcome["status"] == "done":
@@ -350,11 +400,11 @@ def run_discovery(
         description=goal,
         target=Target(surface_type=target.get("surface_type", "web"), app_id=target["app_id"],
                       entry={"url_pattern": target.get("entry", "/")}),
-        inputs=[InputParam(name=k, type="string", required=True,
-                            sensitivity=Sensitivity.PII if k in redact_fields else Sensitivity.NONE)
-                for k in inputs],
-        outputs=[OutputField(name=k, type=output_types.get(k, "string"), from_step=v)
-                 for k, v in outputs_declared.items()],
+        inputs=[InputParam(name=input_name, type="string", required=True,
+                            sensitivity=Sensitivity.PII if input_name in redact_fields else Sensitivity.NONE)
+                for input_name in inputs],
+        outputs=[OutputField(name=output_name, type=output_types.get(output_name, "string"), from_step=source_step_id)
+                 for output_name, source_step_id in outputs_declared.items()],
         steps=steps,
         checkpoint=checkpoint,
         policy=Policy(risk_class=RiskClass.READ_ONLY, allowlist_ref=allowlist.get("app_id")),

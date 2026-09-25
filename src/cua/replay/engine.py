@@ -35,7 +35,7 @@ class _SafeDict(dict):
 
 
 def _validate_inputs(capability: Capability, inputs: dict[str, str]) -> None:
-    missing = [p.name for p in capability.inputs if p.required and p.name not in inputs]
+    missing = [param.name for param in capability.inputs if param.required and param.name not in inputs]
     if missing:
         raise ValueError(f"missing required input(s): {missing}")
 
@@ -43,7 +43,7 @@ def _validate_inputs(capability: Capability, inputs: dict[str, str]) -> None:
 def _check_condition(cond: dict, driver: SurfaceDriver) -> bool:
     """A condition is {"role","name"} | {"text_contains": str} | {"any_of": [cond, ...]}."""
     if "any_of" in cond:
-        return any(_check_condition(c, driver) for c in cond["any_of"])
+        return any(_check_condition(sub_condition, driver) for sub_condition in cond["any_of"])
     if "text_contains" in cond:
         return cond["text_contains"] in driver.observe().a11y_text
     if "role" in cond and "name" in cond:
@@ -91,9 +91,9 @@ def _act(step: Step, driver: SurfaceDriver, base_url: str, inputs: dict[str, str
         sensitive_values.append(value)
         return value
     if step.action == ActionType.ASSERT:
-        res = driver.resolve(step.target)
-        if not res.ok:
-            raise LookupError(f"assert failed: resolved to {res.count} elements")
+        resolved = driver.resolve(step.target)
+        if not resolved.ok:
+            raise LookupError(f"assert failed: resolved to {resolved.count} elements")
         return None
     if step.action == ActionType.WAIT:
         return None
@@ -144,14 +144,14 @@ def replay(
 
         try:
             value = _act(step, driver, base_url, inputs, sensitive_values)
-        except (LookupError, KeyError) as e:
+        except (LookupError, KeyError) as error:
             matched = _match_on_condition(step, driver)
             if matched and matched.classify == OutcomeClass.BUSINESS_OUTCOME:
                 log({"event": "business_outcome", "step": step.id, "outcome": matched.outcome})
                 return ReplayResult.business(matched.outcome, evidence_ref=str(run_dir))
-            log({"event": "failure", "step": step.id, "reason": str(e)})
+            log({"event": "failure", "step": step.id, "reason": str(error)})
             return ReplayResult.failure(
-                step=step.id, expected=f"{step.action.value} to resolve/act", observed=str(e),
+                step=step.id, expected=f"{step.action.value} to resolve/act", observed=str(error),
                 evidence_ref=str(run_dir),
             )
 
